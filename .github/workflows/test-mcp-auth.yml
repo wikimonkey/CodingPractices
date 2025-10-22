@@ -30,11 +30,68 @@ jobs:
         echo "TOKEN=$TOKEN" >> $GITHUB_OUTPUT
         echo "Token length: ${#TOKEN}"
         
+        # Decode JWT token to check roles and claims
+        echo "=== JWT Token Analysis ==="
+        
+        # Extract header
+        HEADER=$(echo $TOKEN | cut -d. -f1)
+        # Add padding if needed for base64 decoding
+        HEADER_PADDED=$(echo "$HEADER" | sed 's/-/+/g; s/_/\//g')
+        case $((${#HEADER_PADDED} % 4)) in
+          2) HEADER_PADDED="${HEADER_PADDED}==";;
+          3) HEADER_PADDED="${HEADER_PADDED}=";;
+        esac
+        
+        # Extract payload
+        PAYLOAD=$(echo $TOKEN | cut -d. -f2)
+        # Add padding if needed for base64 decoding
+        PAYLOAD_PADDED=$(echo "$PAYLOAD" | sed 's/-/+/g; s/_/\//g')
+        case $((${#PAYLOAD_PADDED} % 4)) in
+          2) PAYLOAD_PADDED="${PAYLOAD_PADDED}==";;
+          3) PAYLOAD_PADDED="${PAYLOAD_PADDED}=";;
+        esac
+        
+        echo "JWT Header:"
+        echo "$HEADER_PADDED" | base64 -d 2>/dev/null | jq . || echo "Failed to decode header"
+        
+        echo "JWT Payload:"
+        DECODED_PAYLOAD=$(echo "$PAYLOAD_PADDED" | base64 -d 2>/dev/null)
+        echo "$DECODED_PAYLOAD" | jq . || echo "Failed to decode payload"
+        
+        # Extract specific claims
+        echo "=== Key Claims ==="
+        echo "App ID (aud): $(echo "$DECODED_PAYLOAD" | jq -r '.aud // "Not found"')"
+        echo "Subject (sub): $(echo "$DECODED_PAYLOAD" | jq -r '.sub // "Not found"')"
+        echo "Issuer (iss): $(echo "$DECODED_PAYLOAD" | jq -r '.iss // "Not found"')"
+        echo "App Roles: $(echo "$DECODED_PAYLOAD" | jq -r '.roles // "Not found"')"
+        echo "Scopes: $(echo "$DECODED_PAYLOAD" | jq -r '.scp // "Not found"')"
+        echo "Object ID (oid): $(echo "$DECODED_PAYLOAD" | jq -r '.oid // "Not found"')"
+        echo "Tenant ID (tid): $(echo "$DECODED_PAYLOAD" | jq -r '.tid // "Not found"')"
+        
+        # Check expiration
+        EXP=$(echo "$DECODED_PAYLOAD" | jq -r '.exp // empty')
+        if [ ! -z "$EXP" ]; then
+          CURRENT_TIME=$(date +%s)
+          if [ "$EXP" -gt "$CURRENT_TIME" ]; then
+            EXPIRES_IN=$((EXP - CURRENT_TIME))
+            echo "Token expires in: ${EXPIRES_IN} seconds"
+          else
+            echo "WARNING: Token is expired!"
+          fi
+        fi
+        
     - name: Test MCP Server
       env:
         TOKEN: ${{ steps.get-token.outputs.TOKEN }}
       run: |
-        curl -X POST "https://redis-mcp-oauth.blacktree-376d2ec0.westus2.azurecontainerapps.io/message" \
+        echo "=== Testing MCP Server ==="
+        echo "Token first 20 chars: ${TOKEN:0:20}..."
+        echo "Token last 20 chars: ...${TOKEN: -20}"
+        
+        # Test the MCP server with detailed response
+        echo "Sending request to MCP server..."
+        RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}\nTIME_TOTAL:%{time_total}" \
+          -X POST "https://redis-mcp-oauth.blacktree-376d2ec0.westus2.azurecontainerapps.io/message" \
           -H "Authorization: Bearer $TOKEN" \
           -H "Content-Type: application/json" \
           -d '{
@@ -42,4 +99,25 @@ jobs:
             "id": 1,
             "method": "tools/list",
             "params": {}
-          }'
+          }')
+        
+        # Parse response
+        HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_CODE:" | cut -d: -f2)
+        TIME_TOTAL=$(echo "$RESPONSE" | grep "TIME_TOTAL:" | cut -d: -f2)
+        BODY=$(echo "$RESPONSE" | sed '/HTTP_CODE:/d' | sed '/TIME_TOTAL:/d')
+        
+        echo "HTTP Status Code: $HTTP_CODE"
+        echo "Response Time: ${TIME_TOTAL}s"
+        echo "Response Body:"
+        echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+        
+        # Check for authentication issues
+        if [ "$HTTP_CODE" -eq 401 ]; then
+          echo "❌ AUTHENTICATION FAILED - Token may be missing required roles or be invalid"
+        elif [ "$HTTP_CODE" -eq 403 ]; then
+          echo "❌ AUTHORIZATION FAILED - Token lacks required permissions/roles"
+        elif [ "$HTTP_CODE" -eq 200 ]; then
+          echo "✅ SUCCESS - MCP server accepted the token"
+        else
+          echo "⚠️  Unexpected status code: $HTTP_CODE"
+        fi
