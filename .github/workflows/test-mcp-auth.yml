@@ -1,0 +1,45 @@
+# Sample GitHub Actions workflow for testing app-to-app auth
+# Save this as .github/workflows/test-mcp-auth.yml in your repository
+
+name: Test MCP Authentication
+
+on:
+  workflow_dispatch:  # Manual trigger
+  push:
+    branches: [ main ]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test-auth:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Azure Login with OIDC
+      uses: azure/login@v1
+      with:
+        client-id: 7e7d9666-3415-4e29-8450-e7af1d38af6f
+        tenant-id: 72f988bf-86f1-41af-91ab-2d7cd011db47
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        
+    - name: Get Access Token for MCP
+      id: get-token
+      run: |
+        TOKEN=$(az account get-access-token --resource "api://68dd3060-50d2-4ee0-bb8e-0aa54fff6b1e" --query accessToken -o tsv)
+        echo "TOKEN=$TOKEN" >> $GITHUB_OUTPUT
+        echo "Token length: ${#TOKEN}"
+        
+    - name: Test MCP Server
+      env:
+        TOKEN: ${{ steps.get-token.outputs.TOKEN }}
+      run: |
+        curl -X POST "https://redis-mcp-oauth.blacktree-376d2ec0.westus2.azurecontainerapps.io/message" \
+          -H "Authorization: Bearer $TOKEN" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+          }'
