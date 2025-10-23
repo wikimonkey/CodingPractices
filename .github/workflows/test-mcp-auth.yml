@@ -91,7 +91,7 @@ jobs:
         # Test the MCP server with detailed response
         echo "Sending request to MCP server..."
         RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}\nTIME_TOTAL:%{time_total}" \
-          -X POST "https://redis-mcp-app-dev.wonderfulglacier-3fd8b42d.westus2.azurecontainerapps.io/message \
+          -X POST "https://redis-mcp-app-dev.wonderfulglacier-3fd8b42d.westus2.azurecontainerapps.io/message" \
           -H "Authorization: Bearer $TOKEN" \
           -H "Content-Type: application/json" \
           -d '{
